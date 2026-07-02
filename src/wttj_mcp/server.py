@@ -93,7 +93,7 @@ async def _auto_login() -> None:
             )
             if resp.status_code == 200:
                 user = resp.json().get("user", {})
-                _session.algolia_api_key = user.get("algolia_api_key") or ALGOLIA_PUBLIC_KEY
+                _session.algolia_api_key = ALGOLIA_PUBLIC_KEY  # personal key is index-restricted
                 _session.user_reference = user.get("reference")
         except Exception:
             pass
