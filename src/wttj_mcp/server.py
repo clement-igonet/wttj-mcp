@@ -4,6 +4,19 @@ import os
 from typing import Optional
 from urllib.parse import urlencode
 
+
+def _algolia_params(d: dict) -> str:
+    """URL-encode a dict for Algolia, serialising lists/dicts as JSON and booleans as lowercase."""
+    out = {}
+    for k, v in d.items():
+        if isinstance(v, bool):
+            out[k] = "true" if v else "false"
+        elif isinstance(v, (list, dict)):
+            out[k] = json.dumps(v, ensure_ascii=False, separators=(",", ":"))
+        else:
+            out[k] = v
+    return urlencode(out)
+
 import httpx
 from mcp.server.fastmcp import FastMCP
 
@@ -32,9 +45,11 @@ class _Session:
 
     def api_headers(self) -> dict:
         headers = {
-            "Accept": "application/json",
+            "Accept": "application/json, text/plain, */*",
+            "Origin": "https://www.welcometothejungle.com",
+            "Referer": "https://www.welcometothejungle.com/",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
             "wttj-user-language": "fr",
-            "User-Agent": "Mozilla/5.0 (compatible; WTTJmcp/1.0)",
         }
         if self.jwt_token:
             headers["Authorization"] = f"Bearer {self.jwt_token}"
@@ -45,6 +60,7 @@ class _Session:
             "x-algolia-application-id": ALGOLIA_APP_ID,
             "x-algolia-api-key": self.algolia_api_key or ALGOLIA_PUBLIC_KEY,
             "Content-Type": "application/json",
+            "Referer": "https://www.welcometothejungle.com/",
         }
 
     def _raise_if_unauthenticated(self) -> None:
@@ -62,17 +78,25 @@ async def _auto_login() -> None:
     email = os.getenv("WTTJ_EMAIL")
     password = os.getenv("WTTJ_PASSWORD")
     if email and password and not _session.jwt_token:
-        await _do_login(email, password)
+        try:
+            await _do_login(email, password)
+        except RuntimeError:
+            pass  # fall back to unauthenticated / public Algolia key
 
 
 async def _do_login(email: str, password: str) -> dict:
-    data = {"session[email]": email, "session[password]": password}
     resp = await _session.client.post(
         f"{WTTJ_API}/api/v1/sessions",
-        data=data,
+        files={
+            "session[email]": (None, email),
+            "session[password]": (None, password),
+        },
         headers={
-            "Accept": "application/json",
-            "User-Agent": "Mozilla/5.0 (compatible; WTTJmcp/1.0)",
+            "Accept": "application/json, text/plain, */*",
+            "Origin": "https://www.welcometothejungle.com",
+            "Referer": "https://www.welcometothejungle.com/",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+            "wttj-user-language": "fr",
         },
     )
     if resp.status_code not in (200, 201):
@@ -266,15 +290,15 @@ async def search_jobs(
         "hitsPerPage": min(hits_per_page, 30),
         "page": page,
         "analytics": True,
-        "analyticsTags": json.dumps([f"language:{language}"]),
-        "attributesToRetrieve": json.dumps([
+        "analyticsTags": [f"language:{language}"],
+        "attributesToRetrieve": [
             "name", "organization.name", "organization.slug", "slug",
             "contract_type", "remote", "experience_level_minimum",
             "salary_yearly_minimum", "salary_yearly_maximum", "salary_currency",
             "offices", "published_at", "new_profession", "language", "reference",
-        ]),
-        "attributesToHighlight": json.dumps(["name"]),
-        "responseFields": json.dumps(["hits", "nbHits", "nbPages", "page", "hitsPerPage"]),
+        ],
+        "attributesToHighlight": ["name"],
+        "responseFields": ["hits", "nbHits", "nbPages", "page", "hitsPerPage"],
     }
 
     if filters_parts:
@@ -285,7 +309,7 @@ async def search_jobs(
         radius_m = (around_radius_km or 20) * 1000
         params["aroundRadius"] = radius_m
 
-    payload = {"requests": [{"indexName": index, "params": urlencode(params)}]}
+    payload = {"requests": [{"indexName": index, "params": _algolia_params(params)}]}
 
     resp = await _session.client.post(
         f"{ALGOLIA_DSN}/1/indexes/*/queries",
@@ -337,12 +361,12 @@ async def search_companies(
         "hitsPerPage": min(hits_per_page, 30),
         "page": page,
         "filters": 'website.reference:wttj_fr',
-        "attributesToRetrieve": json.dumps([
+        "attributesToRetrieve": [
             "name", "slug", "reference", "sectors", "offices",
             "jobs_count", "size", "logo", "descriptions",
-        ]),
-        "attributesToHighlight": json.dumps(["name"]),
-        "responseFields": json.dumps(["hits", "nbHits", "nbPages", "page", "hitsPerPage"]),
+        ],
+        "attributesToHighlight": ["name"],
+        "responseFields": ["hits", "nbHits", "nbPages", "page", "hitsPerPage"],
     }
 
     if filters_parts:
@@ -353,7 +377,7 @@ async def search_companies(
         params["aroundLatLng"] = around_lat_lng
         params["aroundRadius"] = (around_radius_km or 20) * 1000
 
-    payload = {"requests": [{"indexName": COMPANY_INDEX, "params": urlencode(params)}]}
+    payload = {"requests": [{"indexName": COMPANY_INDEX, "params": _algolia_params(params)}]}
 
     resp = await _session.client.post(
         f"{ALGOLIA_DSN}/1/indexes/*/queries",
