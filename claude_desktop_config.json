@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "wttj": {
+      "command": "docker",
+      "args": [
+        "run", "--rm", "-i",
+        "--platform", "linux/arm64",
+        "-e", "WTTJ_EMAIL",
+        "-e", "WTTJ_PASSWORD",
+        "wttj-mcp:latest"
+      ],
+      "env": {
+        "WTTJ_EMAIL": "your-email@example.com",
+        "WTTJ_PASSWORD": "your-password"
+      }
+    }
+  }
+}

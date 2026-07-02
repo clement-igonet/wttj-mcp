@@ -1,0 +1,10 @@
+services:
+  wttj-mcp:
+    image: wttj-mcp:latest
+    # MCP runs over stdio — this service is invoked by Claude, not kept running
+    stdin_open: true
+    tty: false
+    env_file:
+      - .env
+    # Apple Silicon / Socktainer compatible
+    platform: linux/arm64
