@@ -66,8 +66,9 @@ class _Session:
     def _raise_if_unauthenticated(self) -> None:
         if not self.jwt_token:
             raise RuntimeError(
-                "Not authenticated. Call the 'login' tool first, or set "
-                "WTTJ_EMAIL and WTTJ_PASSWORD environment variables."
+                "Not authenticated. Set WTTJ_TOKEN in your .env file. "
+                "Get the token from DevTools → Network → any api.welcometothejungle.com request "
+                "→ response body of /api/v2/users/me → copy the 'token' field."
             )
 
 
@@ -75,9 +76,32 @@ _session = _Session()
 
 
 async def _auto_login() -> None:
+    """Bootstrap session from env vars — token takes priority over email/password."""
+    if _session.jwt_token:
+        return
+
+    # Preferred: pre-obtained JWT token (avoids reCAPTCHA)
+    token = os.getenv("WTTJ_TOKEN")
+    if token:
+        _session.jwt_token = token
+        # Fetch Algolia key and user reference from profile
+        try:
+            resp = await _session.client.get(
+                f"{WTTJ_API}/api/v2/users/me",
+                headers=_session.api_headers(),
+            )
+            if resp.status_code == 200:
+                user = resp.json().get("user", {})
+                _session.algolia_api_key = user.get("algolia_api_key") or ALGOLIA_PUBLIC_KEY
+                _session.user_reference = user.get("reference")
+        except Exception:
+            pass
+        return
+
+    # Fallback: email/password (blocked by reCAPTCHA in most environments)
     email = os.getenv("WTTJ_EMAIL")
     password = os.getenv("WTTJ_PASSWORD")
-    if email and password and not _session.jwt_token:
+    if email and password:
         try:
             await _do_login(email, password)
         except RuntimeError:
@@ -118,8 +142,12 @@ async def _do_login(email: str, password: str) -> dict:
 async def login(email: str, password: str) -> str:
     """Authenticate with Welcome to the Jungle using email and password.
 
-    Must be called before any tool that requires authentication.
-    Alternatively set WTTJ_EMAIL and WTTJ_PASSWORD env vars for auto-login.
+    NOTE: WTTJ protects login with reCAPTCHA, so this will fail in most
+    server-side environments. Use WTTJ_TOKEN in your .env instead:
+      1. Log in at welcometothejungle.com in your browser
+      2. Open DevTools → Network → find any request to api.welcometothejungle.com
+      3. Click on GET /api/v2/users/me → Preview → copy the 'token' value
+      4. Set WTTJ_TOKEN=<that value> in your .env file
     """
     user = await _do_login(email, password)
     name = f"{user.get('firstname', '')} {user.get('lastname', '')}".strip()
