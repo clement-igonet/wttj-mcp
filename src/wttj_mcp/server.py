@@ -32,7 +32,7 @@ COMPANY_INDEX = "wk_cms_organizations_production"
 
 class _Session:
     def __init__(self) -> None:
-        self.jwt_token: Optional[str] = None
+        self.session_key: Optional[str] = None
         self.algolia_api_key: Optional[str] = None
         self.user_reference: Optional[str] = None
         self._client: Optional[httpx.AsyncClient] = None
@@ -44,16 +44,18 @@ class _Session:
         return self._client
 
     def api_headers(self) -> dict:
-        headers = {
+        return {
             "Accept": "application/json, text/plain, */*",
             "Origin": "https://www.welcometothejungle.com",
             "Referer": "https://www.welcometothejungle.com/",
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
             "wttj-user-language": "fr",
         }
-        if self.jwt_token:
-            headers["Authorization"] = f"Bearer {self.jwt_token}"
-        return headers
+
+    def api_cookies(self) -> dict:
+        if self.session_key:
+            return {"wttj_api_session_key": self.session_key}
+        return {}
 
     def algolia_headers(self) -> dict:
         return {
@@ -64,11 +66,10 @@ class _Session:
         }
 
     def _raise_if_unauthenticated(self) -> None:
-        if not self.jwt_token:
+        if not self.session_key:
             raise RuntimeError(
-                "Not authenticated. Set WTTJ_TOKEN in your .env file. "
-                "Get the token from DevTools → Network → any api.welcometothejungle.com request "
-                "→ response body of /api/v2/users/me → copy the 'token' field."
+                "Not authenticated. WTTJ_SESSION_KEY is missing or expired. "
+                "Run scripts/refresh_token.py to automatically log in and refresh it."
             )
 
 
@@ -76,19 +77,19 @@ _session = _Session()
 
 
 async def _auto_login() -> None:
-    """Bootstrap session from env vars — token takes priority over email/password."""
-    if _session.jwt_token:
+    """Bootstrap session from WTTJ_SESSION_KEY env var (set by scripts/refresh_token.py)."""
+    if _session.session_key:
         return
 
-    # Preferred: pre-obtained JWT token (avoids reCAPTCHA)
-    token = os.getenv("WTTJ_TOKEN")
-    if token:
-        _session.jwt_token = token
-        # Fetch Algolia key and user reference from profile
+    session_key = os.getenv("WTTJ_SESSION_KEY")
+    if session_key:
+        _session.session_key = session_key
+        # Fetch user reference and Algolia key from profile
         try:
             resp = await _session.client.get(
                 f"{WTTJ_API}/api/v2/users/me",
                 headers=_session.api_headers(),
+                cookies=_session.api_cookies(),
             )
             if resp.status_code == 200:
                 user = resp.json().get("user", {})
@@ -96,42 +97,6 @@ async def _auto_login() -> None:
                 _session.user_reference = user.get("reference")
         except Exception:
             pass
-        return
-
-    # Fallback: email/password (blocked by reCAPTCHA in most environments)
-    email = os.getenv("WTTJ_EMAIL")
-    password = os.getenv("WTTJ_PASSWORD")
-    if email and password:
-        try:
-            await _do_login(email, password)
-        except RuntimeError:
-            pass  # fall back to unauthenticated / public Algolia key
-
-
-async def _do_login(email: str, password: str) -> dict:
-    resp = await _session.client.post(
-        f"{WTTJ_API}/api/v1/sessions",
-        files={
-            "session[email]": (None, email),
-            "session[password]": (None, password),
-        },
-        headers={
-            "Accept": "application/json, text/plain, */*",
-            "Origin": "https://www.welcometothejungle.com",
-            "Referer": "https://www.welcometothejungle.com/",
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
-            "wttj-user-language": "fr",
-        },
-    )
-    if resp.status_code not in (200, 201):
-        raise RuntimeError(f"Login failed ({resp.status_code}): {resp.text[:200]}")
-
-    body = resp.json()
-    user = body.get("user", {})
-    _session.jwt_token = user.get("token")
-    _session.algolia_api_key = user.get("algolia_api_key") or ALGOLIA_PUBLIC_KEY
-    _session.user_reference = user.get("reference")
-    return user
 
 
 # ---------------------------------------------------------------------------
@@ -139,23 +104,17 @@ async def _do_login(email: str, password: str) -> dict:
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-async def login(email: str, password: str) -> str:
-    """Authenticate with Welcome to the Jungle using email and password.
-
-    NOTE: WTTJ protects login with reCAPTCHA, so this will fail in most
-    server-side environments. Use WTTJ_TOKEN in your .env instead:
-      1. Log in at welcometothejungle.com in your browser
-      2. Open DevTools → Network → find any request to api.welcometothejungle.com
-      3. Click on GET /api/v2/users/me → Preview → copy the 'token' value
-      4. Set WTTJ_TOKEN=<that value> in your .env file
+async def login() -> str:
+    """Check authentication status. Session is set automatically via WTTJ_SESSION_KEY
+    (refreshed by scripts/refresh_token.py before the MCP server starts).
     """
-    user = await _do_login(email, password)
-    name = f"{user.get('firstname', '')} {user.get('lastname', '')}".strip()
+    await _auto_login()
+    if not _session.session_key:
+        return json.dumps({"status": "unauthenticated", "error": "WTTJ_SESSION_KEY not set"})
     return json.dumps({
         "status": "authenticated",
-        "name": name,
-        "email": user.get("email"),
-        "reference": user.get("reference"),
+        "user_reference": _session.user_reference,
+        "algolia_key_source": "personal" if _session.algolia_api_key != ALGOLIA_PUBLIC_KEY else "public",
     }, ensure_ascii=False, indent=2)
 
 
@@ -171,6 +130,7 @@ async def get_my_profile() -> str:
     resp = await _session.client.get(
         f"{WTTJ_API}/api/v2/users/me",
         headers=_session.api_headers(),
+        cookies=_session.api_cookies(),
     )
     resp.raise_for_status()
     return json.dumps(resp.json(), ensure_ascii=False, indent=2)
@@ -184,6 +144,7 @@ async def get_my_work_experiences() -> str:
     resp = await _session.client.get(
         f"{WTTJ_API}/api/v1/users/me/work_experiences",
         headers=_session.api_headers(),
+        cookies=_session.api_cookies(),
     )
     resp.raise_for_status()
     return json.dumps(resp.json(), ensure_ascii=False, indent=2)
@@ -197,6 +158,7 @@ async def get_my_skills() -> str:
     resp = await _session.client.get(
         f"{WTTJ_API}/api/v1/users/me/skills",
         headers=_session.api_headers(),
+        cookies=_session.api_cookies(),
     )
     resp.raise_for_status()
     return json.dumps(resp.json(), ensure_ascii=False, indent=2)
@@ -210,6 +172,7 @@ async def get_my_educations() -> str:
     resp = await _session.client.get(
         f"{WTTJ_API}/api/v1/users/me/educations",
         headers=_session.api_headers(),
+        cookies=_session.api_cookies(),
     )
     resp.raise_for_status()
     return json.dumps(resp.json(), ensure_ascii=False, indent=2)
@@ -438,6 +401,7 @@ async def get_company(slug: str) -> str:
     resp = await _session.client.get(
         f"{WTTJ_API}/api/v1/organizations/{slug}",
         headers={**_session.api_headers(), "Accept": "application/json, application/xml"},
+        cookies=_session.api_cookies(),
     )
     resp.raise_for_status()
     return json.dumps(resp.json(), ensure_ascii=False, indent=2)
@@ -459,6 +423,7 @@ async def get_job(organization_slug: str, job_slug: str) -> str:
     resp = await _session.client.get(
         f"{WTTJ_API}/api/v1/organizations/{organization_slug}/jobs/{job_slug}",
         headers={**_session.api_headers(), "Accept": "application/json, application/xml"},
+        cookies=_session.api_cookies(),
     )
     resp.raise_for_status()
     return json.dumps(resp.json(), ensure_ascii=False, indent=2)

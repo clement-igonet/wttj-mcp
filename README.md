@@ -38,7 +38,14 @@ MCP server for [Welcome to the Jungle](https://www.welcometothejungle.com) — s
 
 ## Setup
 
-### 1. Build the image
+### 1. Install dependencies
+
+```bash
+pip install playwright httpx
+python -m playwright install chromium
+```
+
+### 2. Build the Docker image
 
 ```bash
 git clone https://github.com/clement-igonet/wttj-mcp.git
@@ -48,30 +55,35 @@ docker build --platform linux/arm64 -t wttj-mcp:latest .
 
 > **amd64 / Linux?** Drop `--platform linux/arm64`.
 
-### 2. Configure credentials
+### 3. Configure credentials
 
 ```bash
 cp .env.example .env
-# Edit .env and fill in WTTJ_EMAIL and WTTJ_PASSWORD
+# Edit .env: fill in WTTJ_EMAIL and WTTJ_PASSWORD
 ```
 
-### 3. Add to Claude Code
+### 4. Add to Claude Code
 
 Add to `~/.claude.json` under `mcpServers`:
 
 ```json
 "wttj": {
-  "command": "docker",
-  "args": [
-    "run", "--rm", "-i",
-    "--platform", "linux/arm64",
-    "--env-file", "/absolute/path/to/wttj-mcp/.env",
-    "wttj-mcp:latest"
-  ]
+  "command": "/bin/bash",
+  "args": ["/absolute/path/to/wttj-mcp/scripts/start_mcp.sh"]
 }
 ```
 
-Restart Claude Code — the server auto-logs in on the first tool call.
+Restart Claude Code — authentication is fully automatic.
+
+### How authentication works
+
+On each startup, `scripts/start_mcp.sh` runs `scripts/refresh_token.py` which:
+1. Opens Chrome briefly to get a CSRF token from the WTTJ signin page
+2. Posts your credentials directly via the WTTJ API (no form, no reCAPTCHA)
+3. Saves the session cookie to `.env` as `WTTJ_SESSION_KEY`
+4. Starts the Docker MCP server
+
+The session is cached for ~50 minutes and reused across restarts.
 
 ## Example prompts
 
