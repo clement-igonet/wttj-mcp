@@ -13,5 +13,6 @@ python3 "$SCRIPT_DIR/refresh_token.py" >&2
 # Hand off to Docker MCP server (exec keeps stdin/stdout clean for MCP protocol)
 exec docker run --rm -i \
     --platform linux/arm64 \
+    --dns 8.8.8.8 \
     --env-file "$ENV_FILE" \
     wttj-mcp:latest
